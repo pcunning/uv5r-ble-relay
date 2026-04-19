@@ -1,0 +1,93 @@
+# Build and test uv5r-ble-relay on every push to main.
+#
+# Windows is not included: the PTY layer (github.com/creack/pty) is Unix-only.
+# A Windows port would need to replace ptylink/ with a COM port emulator.
+
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / ${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS arm64 (Apple Silicon) – native runner
+          - runner: macos-latest
+            os: macOS
+            goos: darwin
+            goarch: arm64
+
+          # macOS amd64 (Intel) – cross-compile from arm64 runner
+          # CoreBluetooth is available on both; CGO is fine for same-OS cross.
+          - runner: macos-latest
+            os: macOS
+            goos: darwin
+            goarch: amd64
+
+          # Linux amd64
+          - runner: ubuntu-latest
+            os: Linux
+            goos: linux
+            goarch: amd64
+            apt: ""
+
+          # Linux arm64 – cross-compile with CGO using aarch64 toolchain
+          - runner: ubuntu-latest
+            os: Linux
+            goos: linux
+            goarch: arm64
+            apt: "gcc-aarch64-linux-gnu"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install cross-compiler
+        if: matrix.apt != ''
+        run: sudo apt-get install -y ${{ matrix.apt }}
+
+      - name: Install BlueZ headers (Linux)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: sudo apt-get install -y libbluetooth-dev
+
+      - name: Install BlueZ headers (Linux arm64 cross)
+        if: matrix.goos == 'linux' && matrix.goarch == 'arm64'
+        run: sudo apt-get install -y libbluetooth-dev:arm64 || true
+        # libbluetooth-dev:arm64 may not be available in all Ubuntu images;
+        # the build will still succeed if the header is present via the cross toolchain.
+
+      - name: Test (native only)
+        if: matrix.goarch == 'amd64' || (matrix.goos == 'darwin' && matrix.goarch == 'arm64')
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go test ./...
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+          CC: ${{ matrix.goarch == 'arm64' && matrix.goos == 'linux' && 'aarch64-linux-gnu-gcc' || '' }}
+        run: |
+          go build -v -o uv5r-relay-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/uv5r-relay
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: uv5r-relay-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: uv5r-relay-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: error
