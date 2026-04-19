@@ -85,7 +85,7 @@ func Connect(cfg BLEConfig) (*BLETransport, error) {
 		if err != nil {
 			addr.Set(cfg.Address)
 		} else {
-			addr.UUID = auid
+			setAddressUUID(&addr, auid)
 		}
 		cfg.Logger.Info("ble: skipping scan, using configured address", "address", cfg.Address)
 	} else {

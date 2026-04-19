@@ -26,9 +26,9 @@ jobs:
             goos: darwin
             goarch: arm64
 
-          # macOS amd64 (Intel) – cross-compile from arm64 runner
-          # CoreBluetooth is available on both; CGO is fine for same-OS cross.
-          - runner: macos-latest
+          # macOS amd64 (Intel) – native macos-13 runner (cbgo uses Objective-C CGO
+          # which cannot be cross-compiled from arm64 to amd64)
+          - runner: macos-13
             os: macOS
             goos: darwin
             goarch: amd64
@@ -70,7 +70,7 @@ jobs:
         # the build will still succeed if the header is present via the cross toolchain.
 
       - name: Test (native only)
-        if: matrix.goarch == 'amd64' || (matrix.goos == 'darwin' && matrix.goarch == 'arm64')
+        if: matrix.goarch == 'amd64' || matrix.goarch == 'arm64' && matrix.goos == 'darwin'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
