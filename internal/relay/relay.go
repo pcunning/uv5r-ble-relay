@@ -72,27 +72,47 @@ func Run(ctx context.Context, pty io.ReadWriteCloser, t io.ReadWriteCloser, logg
 }
 
 func pump(ctx context.Context, src io.Reader, dst io.Writer, name string, logger *slog.Logger) error {
-	buf := make([]byte, 4096)
+	type readResult struct {
+		data []byte
+		err  error
+	}
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		n, rerr := src.Read(buf)
-		if n > 0 {
-			logger.Debug("relay: read chunk", "dir", name, "bytes", n)
-			if _, werr := dst.Write(buf[:n]); werr != nil {
+		// Run each Read in a goroutine so we can select on context cancellation.
+		// This is necessary on Linux where os.NewFile-wrapped PTY fds are not
+		// registered with the netpoller and Close/SetReadDeadline from another
+		// goroutine does not interrupt a blocked Read.
+		ch := make(chan readResult, 1)
+		go func() {
+			buf := make([]byte, 4096)
+			n, err := src.Read(buf)
+			ch <- readResult{buf[:n], err}
+		}()
+
+		var r readResult
+		select {
+		case <-ctx.Done():
+			return nil
+		case r = <-ch:
+		}
+
+		if len(r.data) > 0 {
+			logger.Debug("relay: read chunk", "dir", name, "bytes", len(r.data))
+			if _, werr := dst.Write(r.data); werr != nil {
 				logger.Debug("relay: write error", "dir", name, "err", werr)
 				return werr
 			}
-			logger.Debug("relay: forwarded chunk", "dir", name, "bytes", n)
+			logger.Debug("relay: forwarded chunk", "dir", name, "bytes", len(r.data))
 		}
-		if rerr != nil {
-			if rerr == io.EOF {
+		if r.err != nil {
+			if r.err == io.EOF {
 				logger.Debug("relay: EOF", "dir", name)
 				return nil
 			}
-			logger.Debug("relay: read error", "dir", name, "err", rerr)
-			return rerr
+			logger.Debug("relay: read error", "dir", name, "err", r.err)
+			return r.err
 		}
 	}
 }
