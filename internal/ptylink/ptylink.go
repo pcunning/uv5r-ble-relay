@@ -34,19 +34,29 @@ func Open(symlinkPath string) (*PTY, error) {
 		_ = slave.Close()
 		return nil, fmt.Errorf("term.MakeRaw: %w", err)
 	}
-	// Set the master fd non-blocking and re-wrap it so the Go runtime
-	// registers it with the netpoller. Without this, SetReadDeadline returns
-	// "file type does not support deadline" on a PTY master, and there is no
-	// reliable way to interrupt a blocked Read at shutdown on macOS.
-	if err := unix.SetNonblock(int(master.Fd()), true); err != nil {
+	// Duplicate the master fd so masterPollable owns an independent descriptor.
+	// os.NewFile does not transfer fd ownership away from master; when master
+	// is GC'd its finalizer would close the shared fd, leaving masterPollable
+	// with EBADF. Dup'ing first ensures the two *os.File values are fully
+	// independent.
+	masterName := master.Name()
+	rawFd, err := unix.Dup(int(master.Fd()))
+	if err != nil {
 		_ = master.Close()
+		_ = slave.Close()
+		return nil, fmt.Errorf("dup master fd: %w", err)
+	}
+	_ = master.Close() // safe: rawFd is an independent duplicate
+	// Set the dup'd fd non-blocking so the Go runtime registers it with the
+	// netpoller. Without this, SetReadDeadline returns "file type does not
+	// support deadline" on a PTY master, and there is no reliable way to
+	// interrupt a blocked Read at shutdown on macOS.
+	if err := unix.SetNonblock(rawFd, true); err != nil {
+		_ = unix.Close(rawFd)
 		_ = slave.Close()
 		return nil, fmt.Errorf("set master non-blocking: %w", err)
 	}
-	masterPollable := os.NewFile(master.Fd(), master.Name())
-	// We intentionally do not call master.Close() here; masterPollable shares
-	// the fd. Closing masterPollable releases the descriptor.
-	_ = master
+	masterPollable := os.NewFile(uintptr(rawFd), masterName)
 	p := &PTY{master: masterPollable, slave: slave, link: symlinkPath}
 	if symlinkPath != "" {
 		_ = os.Remove(symlinkPath)
